@@ -56,59 +56,76 @@ def fetch_trending_data():
         
     return response.data, "All_Time"
 
-async def fetch_single_info(l_id, client, headers, sem, info_map, progress):
-    async with sem:
-        try:
-            # Fetch both images and shop details in one request
-            url = f"https://openapi.etsy.com/v3/application/listings/{l_id}?includes=Images,Shop"
-            resp = await client.get(url, headers=headers, timeout=10)
-            
-            if resp.status_code == 200:
-                data = resp.json()
+async def fetch_batch_info(batch_ids, client, headers, sem, info_map, progress):
+    max_retries = 3
+    retries = 0
+    url = "https://openapi.etsy.com/v3/application/listings/batch"
+    params = [("listing_ids[]", str(lid)) for lid in batch_ids]
+    params.append(("includes", "Images,Shop"))
+    
+    while retries <= max_retries:
+        async with sem:
+            try:
+                resp = await client.get(url, headers=headers, params=params, timeout=15)
                 
-                # Extract image
-                images = data.get("images", [])
-                img = ""
-                if images:
-                    img = images[0].get("url_570xN") or images[0].get("url_fullxfull") or images[0].get("url_170x135", "")
-                
-                # Extract shop name
-                shop_name = data.get("shop", {}).get("shop_name", "")
-                
-                info_map[l_id] = {
-                    "image_url": img,
-                    "shop_name": shop_name
-                }
+                if resp.status_code == 200:
+                    results = resp.json().get("results", [])
+                    for data in results:
+                        l_id = data.get("listing_id")
+                        if not l_id: continue
+                        
+                        images = data.get("images", [])
+                        img = ""
+                        if images:
+                            img = images[0].get("url_570xN") or images[0].get("url_fullxfull") or images[0].get("url_170x135", "")
+                        
+                        shop_name = data.get("shop", {}).get("shop_name", "")
+                        
+                        info_map[l_id] = {
+                            "image_url": img,
+                            "shop_name": shop_name
+                        }
+                    break
+                        
+                elif resp.status_code == 429:
+                    wait = int(resp.headers.get("retry-after", 2))
+                    await asyncio.sleep(wait)
+                    retries += 1
+                    continue
+                else:
+                    break
                     
-            elif resp.status_code == 429:
-                # Rate limit
-                await asyncio.sleep(1)
+            except Exception as e:
+                retries += 1
+                if retries > max_retries:
+                    break
+                await asyncio.sleep(2 * retries)
+                continue
                 
-            progress[0] += 1
-            if progress[0] % 25 == 0:
-                print(f"  Progress: {progress[0]} items fetched...")
-                
-        except Exception as e:
-            pass
+    progress[0] += len(batch_ids)
+    if progress[0] % 100 == 0:
+        print(f"  Progress: {progress[0]} items fetched...")
 
 async def _fetch_info_async(listing_ids):
     if not ETSY_API_KEY:
         print("ETSY_API_KEY not found. Cannot fetch missing info.")
         return {}
         
-    print(f"Fetching images & shop names for {len(listing_ids)} listings from Etsy API using async...")
+    print(f"Fetching images & shop names for {len(listing_ids)} listings from Etsy API using async batch...")
     
     headers = {"x-api-key": ETSY_API_KEY}
     info_map = {}
     progress = [0]
     
-    # 10 concurrent requests at most
     sem = asyncio.Semaphore(10)
+    
+    batch_size = 100
+    batches = [listing_ids[i:i + batch_size] for i in range(0, len(listing_ids), batch_size)]
     
     async with httpx.AsyncClient() as client:
         tasks = [
-            fetch_single_info(l_id, client, headers, sem, info_map, progress)
-            for l_id in listing_ids
+            fetch_batch_info(batch, client, headers, sem, info_map, progress)
+            for batch in batches
         ]
         await asyncio.gather(*tasks)
             
