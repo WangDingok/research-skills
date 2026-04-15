@@ -193,6 +193,7 @@ def process_data(raw_data):
         ori_release_time = row.get("original_creation_time") or row.get("original_creation_date")
         ori_release_time_str = "-"
         since_ori_str = "-"
+        days_live = 9999
         if ori_release_time:
             try:
                 # Support both timestamp (int/float) and ISO string
@@ -215,6 +216,7 @@ def process_data(raw_data):
                     delta = now - dt_ori_full
                 hours = max(0, int(delta.total_seconds() // 3600))
                 days = delta.days
+                days_live = max(0, days)
                 ori_release_time_str = dt_ori.strftime("%Y-%m-%d")
                 if hours < 24:
                     since_ori_str = f"{hours} giờ"
@@ -243,6 +245,7 @@ def process_data(raw_data):
             "shop_name": shop_name,
             "sold_24h": sold_24h,
             "days_since": row.get("days_since_original_creation", 0),
+            "days_live": days_live,
             "ori_release_time": ori_release_time_str,
             "since_ori": since_ori_str
         }
@@ -370,6 +373,11 @@ def generate_dashboard(df, report_date):
         </select>
     </div>
     
+    <style>
+        @keyframes blinker {{
+            50% {{ opacity: 0.5; }}
+        }}
+    </style>
     <table style='width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; box-shadow: 0 4px 8px rgba(0,0,0,0.1);'>
         <thead>
             <tr style='background-color: #f2f2f2; border-bottom: 2px solid #ddd; text-align: left;'>
@@ -406,7 +414,17 @@ def generate_dashboard(df, report_date):
             
             let html = '';
             sortedData.forEach((row, i) => {{
-                const bgColor = i % 2 === 0 ? '#ffffff' : '#f9f9f9';
+                let bgColor = i % 2 === 0 ? '#ffffff' : '#f9f9f9';
+                let highlightBadge = '';
+                let titleStyle = 'color: #E56A54; text-decoration: none; font-weight: bold;';
+                
+                // Highlight condition: listed < 4 days and has sales
+                if (row.days_live < 4 && row.sold_24h > 0) {{
+                    bgColor = '#fffae6'; // Highlight background
+                    titleStyle = 'color: #d32f2f; text-decoration: none; font-weight: bold; font-size: 1.1em;';
+                    highlightBadge = `<div style='margin-bottom: 5px;'><span style='background-color: #f44336; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: bold; animation: blinker 1.5s linear infinite;'>🔥 HOT NEW RELEASE</span></div>`;
+                }}
+
                 const imgSrc = row.image_url ? `<img src='${{row.image_url}}' width='80' style='border-radius: 4px;'/>` : 'No Image';
                 
                 let tagsDisplay = '';
@@ -420,7 +438,8 @@ def generate_dashboard(df, report_date):
                         <td style='padding: 12px; font-weight: bold; text-align: center;'>#${{row.rank}}</td>
                         <td style='padding: 12px;'>${{imgSrc}}</td>
                         <td style='padding: 12px;'>
-                            <a href='${{row.url}}' target='_blank' style='color: #E56A54; text-decoration: none; font-weight: bold;'>${{row.title}}</a>
+                            ${{highlightBadge}}
+                            <a href='${{row.url}}' target='_blank' style='${{titleStyle}}'>${{row.title}}</a>
                             <div style='font-size: 0.85em; color: #888; margin-top: 4px;'>Shop: ${{row.shop_name}}</div>
                             ${{tagsDisplay}}
                         </td>
