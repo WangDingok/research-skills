@@ -40,8 +40,8 @@ class EtsyTrendAnalyzer:
         self,
         api_key: str,
         base_url: str = "https://openapi.etsy.com/v3/application/listings/active",
-        data_dir: str = "/home/ding/debug_mc/Research-Agents/public/charts",
-        charts_dir: str = "/home/ding/debug_mc/Research-Agents/",
+        data_dir: str = os.path.join(os.path.dirname(__file__), "charts"),
+        charts_dir: str = os.path.dirname(__file__),
         taxonomy_ids: Optional[List[int]] = None,
     ):
         if not api_key:
@@ -86,12 +86,18 @@ class EtsyTrendAnalyzer:
 
         cache_filename = self._get_cache_filename(keywords, days_back)
 
+        CACHE_MAX_AGE_HOURS = 0  # 0 = cache disabled (always refresh)
         if not force_refresh and os.path.exists(cache_filename):
             try:
                 with open(cache_filename, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                print(f"Đã tải dữ liệu cache: {len(data.get('listings', []))} sản phẩm từ {cache_filename}")
-                return data.get('listings', [])
+                cached_date = datetime.fromisoformat(data.get("cached_date", "2000-01-01"))
+                age_hours = (datetime.now() - cached_date).total_seconds() / 3600
+                if age_hours <= CACHE_MAX_AGE_HOURS:
+                    print(f"Đã tải dữ liệu cache ({age_hours:.1f}h tuổi): {len(data.get('listings', []))} sản phẩm từ {cache_filename}")
+                    return data.get('listings', [])
+                else:
+                    print(f"Cache hết hạn ({age_hours:.1f}h > {CACHE_MAX_AGE_HOURS}h), làm mới...")
             except Exception as e:
                 print(f"Lỗi khi tải cache: {e}")
 

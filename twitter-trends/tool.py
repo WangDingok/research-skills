@@ -87,56 +87,80 @@ def _get_featured_sync(
     return results
 
 
-def _get_statistics_sync(
+def _get_en_trends_sync(
     session: requests.Session,
     country: str = "united-states",
-    mode: Literal["24h", "7d", "30d"] = "30d",
+    timeout: int = 15,
 ):
-    url = f"{BASE_URL}/{country}/statistics"
-    soup = _get_soup(session, url)
+    """Fetch 50-item trending list from /en via two-step AJAX (cookie + POST).
+
+    Computes a recurrence score: how many of the ~8 hourly snapshot tables
+    each keyword appears in.  Keywords that persist across snapshots are
+    genuinely trending; flash spikes appear in only 1-2 tables.
+    """
+    import re
+
+    # Step 1: GET /en page to obtain session cookies
+    page_url = f"{BASE_URL}/{country}/en"
+    soup = _get_soup(session, page_url, timeout=timeout)
     if not soup:
         return []
 
-    mode_map = {
-        "24h": "last 24 hours",
-        "7d": "last 7 days",
-        "30d": "last 30 days",
+    # Extract the JS country variable (e.g. "United States")
+    match = re.search(r'sayfaUlkesiJS\s*=\s*"([^"]+)"', str(soup))
+    country_name = match.group(1) if match else country.replace("-", " ").title()
+
+    # Step 2: POST AJAX with cookies from step 1
+    ajax_url = f"{BASE_URL}/other/trendslist/trend-result.php"
+    headers = {
+        "Content-type": "application/x-www-form-urlencoded",
+        "Referer": page_url,
+        "X-Requested-With": "XMLHttpRequest",
     }
-
-    target_text = mode_map.get(mode, "last 30 days")
-
-    blocks = soup.find_all("div", class_="tablo_s")
-    target_block = None
-
-    for block in blocks:
-        header = block.find("div", class_="tablo_s_baslik")
-        if header and target_text in header.get_text().lower():
-            target_block = block
-            break
-
-    if not target_block:
+    try:
+        res = session.post(
+            ajax_url,
+            data=f"country={urllib.parse.quote(country_name)}",
+            headers=headers,
+            timeout=timeout,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except Exception:
         return []
 
+    # Step 3: Count recurrence across all hourly snapshot tables
+    keyword_count = {}       # keyword → number of tables it appears in
+    keyword_best_rank = {}   # keyword → best (lowest) rank seen
+    table_keys = [k for k in data if k.startswith("table")]
+
+    for table_key in table_keys:
+        trends = data[table_key].get("trends", {})
+        for idx_key, raw_val in trends.items():
+            try:
+                parsed = json.loads(raw_val)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            keyword = urllib.parse.unquote(parsed[0]).replace("+", " ")
+            rank_num = int(idx_key.lstrip("t"))
+            keyword_count[keyword] = keyword_count.get(keyword, 0) + 1
+            if keyword not in keyword_best_rank or rank_num < keyword_best_rank[keyword]:
+                keyword_best_rank[keyword] = rank_num
+
+    # Step 4: Sort by recurrence desc, then by best rank asc
+    sorted_keywords = sorted(
+        keyword_count.keys(),
+        key=lambda k: (-keyword_count[k], keyword_best_rank[k]),
+    )
+
+    total_tables = len(table_keys) or 1
     results = []
-    rows = target_block.select(".tablo_so_siralama")
-
-    for row in rows:
-        rank = row.select_one(".tablo_so_sira_no")
-        volume = row.select_one(".tablo_so_volume")
-        word = row.select_one(".tablo_so_word")
-
-        if not (rank and volume and word):
-            continue
-
-        word_text = word.get_text(strip=True)
-        if not word_text or word_text == "-":
-            continue
-
+    for i, kw in enumerate(sorted_keywords[:50]):
         results.append({
-            "rank": rank.get_text(strip=True),
-            "keyword": word_text,
-            "volume": volume.get_text(strip=True),
-            "source": row.get("data-src", "")
+            "rank": str(i + 1),
+            "keyword": kw,
+            "volume": str(keyword_count[kw] * 1000),
+            "recurrence": f"{keyword_count[kw]}~{total_tables}",
         })
 
     return results
@@ -193,10 +217,10 @@ async def get_twitter_statistics_trends(
     try:
         results = await asyncio.wait_for(
             asyncio.to_thread(
-                _get_statistics_sync,
+                _get_en_trends_sync,
                 session,
                 country,
-                mode,
+                timeout,
             ),
             timeout=timeout,
         )

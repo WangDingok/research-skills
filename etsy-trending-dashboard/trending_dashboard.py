@@ -12,7 +12,12 @@ from datetime import date
 from typing import Optional
 from collections import Counter
 from supabase import Client, create_client
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args, **_kwargs):
+        return False
 
 # Add path to etsy-market-research to allow importing its db module
 etsy_market_research_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "etsy-market-research")

@@ -16,3 +16,7 @@ matplotlib>=3.10.8
 aiosqlite>=0.22.1
 pandas>=3.0.1
 seaborn>=0.13.2
+plotly
+supabase
+dotenv
+httpx
