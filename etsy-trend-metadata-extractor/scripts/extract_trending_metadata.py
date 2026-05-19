@@ -3,6 +3,7 @@ import sys
 import argparse
 import json
 import sqlite3
+import time
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -22,7 +23,7 @@ def format_matrix(data: List[Dict[str, Any]]) -> str:
         return "No data found matching the criteria."
     
     # We want a markdown table/matrix
-    headers = ["Listing ID", "Title (Truncated)", "Shop", "Price ($)", "Sold 24h", "Sold 7d", "URL"]
+    headers = ["Listing ID", "Title (Truncated)", "Shop", "Price ($)", "Sold 24h", "Sold 7d", "Age(d)", "URL"]
     
     matrix = "| " + " | ".join(headers) + " |\n"
     matrix += "| " + " | ".join(["---"] * len(headers)) + " |\n"
@@ -46,6 +47,7 @@ def format_matrix(data: List[Dict[str, Any]]) -> str:
             f"{row.get('price_usd', 0):.2f}",
             str(row.get('sold_24h', 0)),
             str(row.get('sold_7d', 0)),
+            str(row.get('age_days', 0)),
             f"[Link]({url})"
         ]
         matrix += "| " + " | ".join(r) + " |\n"
@@ -71,13 +73,13 @@ def main():
                        COALESCE(s.sold_24h, 0) as sold_24h, 
                        COALESCE(s.sold_7d, 0) as sold_7d, 
                        COALESCE(s.sold_30d, 0) as sold_30d,
-                       (SELECT views FROM etsy_daily_snapshots WHERE listing_id = l.listing_id ORDER BY snapshot_date DESC LIMIT 1) as recent_views
+                       (SELECT views FROM etsy_daily_snapshots WHERE listing_id = l.listing_id ORDER BY snapshot_date DESC LIMIT 1) as recent_views,
+                       (SELECT num_favorers FROM etsy_daily_snapshots WHERE listing_id = l.listing_id ORDER BY snapshot_date DESC LIMIT 1) as recent_favorers
                 FROM etsy_listings l
                 LEFT JOIN etsy_sold_summary s ON l.listing_id = s.listing_id
                 WHERE l.original_creation_ts >= ? 
                   AND (COALESCE(s.sold_24h, 0) >= ? OR COALESCE(s.sold_7d, 0) >= ?)
             """
-            import time
             threshold_ts = int(time.time()) - (args.days_new * 86400)
             params = [threshold_ts, 0, 0] # 0 to fetch all, will filter in python
             
@@ -93,7 +95,8 @@ def main():
                        COALESCE(s.sold_24h, 0) as sold_24h, 
                        COALESCE(s.sold_7d, 0) as sold_7d, 
                        COALESCE(s.sold_30d, 0) as sold_30d,
-                       (SELECT views FROM etsy_daily_snapshots WHERE listing_id = l.listing_id ORDER BY snapshot_date DESC LIMIT 1) as recent_views
+                       (SELECT views FROM etsy_daily_snapshots WHERE listing_id = l.listing_id ORDER BY snapshot_date DESC LIMIT 1) as recent_views,
+                       (SELECT num_favorers FROM etsy_daily_snapshots WHERE listing_id = l.listing_id ORDER BY snapshot_date DESC LIMIT 1) as recent_favorers
                 FROM etsy_listings l
                 LEFT JOIN etsy_sold_summary s ON l.listing_id = s.listing_id
                 WHERE (COALESCE(s.sold_24h, 0) >= ? OR COALESCE(s.sold_7d, 0) >= ?)
@@ -114,6 +117,7 @@ def main():
         conn.close()
             
         # Clean results
+        current_ts = int(time.time())
         cleaned_results = []
         for row in results:
             r = dict(row)
@@ -139,11 +143,37 @@ def main():
                     r['tags'] = json.loads(r['tags'])
                 except:
                     pass
-                    
+            
+            # Calculate Hotness Score based on interaction metrics and age
+            original_creation_ts = r.get('original_creation_ts') or current_ts
+            age_days = max(1, (current_ts - original_creation_ts) / 86400)
+            
+            sold_24h = r.get('sold_24h') or 0
+            sold_7d = r.get('sold_7d') or 0
+            sold_30d = r.get('sold_30d') or 0
+            recent_views = r.get('recent_views') or 0
+            recent_favorers = r.get('recent_favorers') or 0
+            
+            # Weighted interaction score
+            interaction_score = (sold_24h * 50) + (sold_7d * 10) + (sold_30d * 2) + (recent_views * 0.5) + (recent_favorers * 1)
+            
+            # Hotness formula: interaction score adjusted by age (newer = hotter)
+            hotness_score = interaction_score / (age_days ** 0.8)
+            
+            r['hotness_score'] = round(hotness_score, 2)
+            r['age_days'] = round(age_days, 1)
+            
             cleaned_results.append(r)
             
-            if len(cleaned_results) >= args.top_n:
-                break
+        # Sort all matched results by hotness_score descending
+        cleaned_results.sort(key=lambda x: x['hotness_score'], reverse=True)
+        
+        # Take the top N after sorting
+        cleaned_results = cleaned_results[:args.top_n]
+        
+        # Remove hotness_score to avoid confusing the LLM downstream
+        for r in cleaned_results:
+            r.pop('hotness_score', None)
             
         if args.format == 'json':
             print(json.dumps(cleaned_results, indent=2, ensure_ascii=False))
