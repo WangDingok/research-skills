@@ -77,7 +77,8 @@ async def fetch_batch_info(batch_ids, client, headers, sem, info_map, progress):
                         images = data.get("images", [])
                         img = ""
                         if images:
-                            img = images[0].get("url_570xN") or images[0].get("url_fullxfull") or images[0].get("url_170x135", "")
+                            target_image = images[1] if len(images) > 1 else images[0]
+                            img = target_image.get("url_570xN") or target_image.get("url_fullxfull") or target_image.get("url_170x135", "")
                         
                         shop_name = data.get("shop", {}).get("shop_name", "")
                         
